@@ -1,0 +1,8 @@
+MG
+*.inc
+*.log
+py.py
+Zg_n*
+MG5_debug
+output
+.mg_path
