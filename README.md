@@ -16,7 +16,7 @@ On the first invocation, point the script at your MadGraph binary with
 on subsequent calls.
 
 ```
-./generate_amp_dataset.py --mg-path /path/to/MG/bin/mg5_aMC --process "q q > z g"
+./generate_amp_dataset.py --mg-path /path/to/MadGraph/bin/mg5_aMC --process "q q > z g"
 ```
 
 Arguments:
@@ -37,6 +37,12 @@ Arguments:
   **Warning:** this expression equals the true cos θ* only if at least
   one of the two final-state particles is massless. For two massive
   final states it is only a proxy.
+- `overwrite_alphas alphas` *(optional)* - overwrite alphas value used by
+  MG to generate events
+- `overwrite_PDGs pdgs` *(optional)* - comma-separated list of PDG IDs to 
+  overwrite in the PDG IDs saved in the lhe files (e.g. '21,1,-1'). Can 
+  be used to evaluate amplitude of only one specific subproccess on all
+  events of combined sample.
 - `--workdir PATH` — output directory (default `./output/proc_<slug>`,
   where `<slug>` is derived from the final-state of the process string).
 - `--plot` — produce a hexbin plot of `(m_inv, cos θ)` colored by mean
@@ -74,7 +80,7 @@ In the working directory (`output/proc_<slug>/` by default):
 
 ```
 ./generate_amp_dataset.py \
-    --mg-path /opt/MG5_aMC_v3_5_4/bin/mg5_aMC \
+    --mg-path /path/to/MadGraph/bin/mg5_aMC \
     --process "q q > z g" \
     --n-events 100000 \
     --m-inv 400,500 \
@@ -90,4 +96,15 @@ A subsequent run can drop `--mg-path` and try a different process:
 
 ```
 ./generate_amp_dataset.py --process "g g > t t~" --n-events 50000
+```
+
+For the Z+gluon events available at https://zenodo.org/records/16793011 
+the amplitude was evaluated with fixed $\alpha_s = 0.13$ for the 
+$u \bar u\to Z  + n g$ subprocess. To recreate these datasets, use e.g.
+```
+./generate_amp_dataset.py \
+    --process "q q > z g" \
+    --n-events 100000 \
+    --overwrite_alphas 0.13
+    --overwrite_PDGs 1,-1,23,21
 ```

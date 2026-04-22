@@ -78,7 +78,7 @@ def _slug(process):
     return s or "proc"
 
 
-def _write_mg_script(path, mode, out_dir, process, group=True):
+def _write_mg_script(path, mode, out_dir, process, group=False):
     with open(path, "w") as f:
         f.write("import model sm\n")
         if not group:
@@ -200,12 +200,16 @@ def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range):
     lo, hi = m_inv_range or (None, None)
     lo = 0.0 if lo is None else float(lo)
     hi = 1.0e12 if hi is None else float(hi)
-    body = _DUMMY_CUTS_TMPL.replace("__MINV_LO__", repr(lo)).replace("__MINV_HI__", repr(hi))
+    body = _DUMMY_CUTS_TMPL.replace("__MINV_LO__", repr(lo)).replace(
+        "__MINV_HI__", repr(hi)
+    )
     if costheta_range is not None:
         clo, chi = costheta_range
         clo = -1.0 if clo is None else float(clo)
         chi = 1.0 if chi is None else float(chi)
-        ct_block = _CT_BLOCK.replace("__CT_LO__", repr(clo)).replace("__CT_HI__", repr(chi))
+        ct_block = _CT_BLOCK.replace("__CT_LO__", repr(clo)).replace(
+            "__CT_HI__", repr(chi)
+        )
     else:
         ct_block = ""
     body = body.replace("__CT_BLOCK__", ct_block)
@@ -249,7 +253,10 @@ def _generate_events(out_dir, n_events, dR, log):
     # find produced LHE
     evt_dir = os.path.join(out_dir, "Events", "run_01")
     for name in os.listdir(evt_dir):
-        if name.endswith("unweighted_events.lhe.gz") or name == "unweighted_events.lhe.gz":
+        if (
+            name.endswith("unweighted_events.lhe.gz")
+            or name == "unweighted_events.lhe.gz"
+        ):
             lhe = os.path.join(evt_dir, name)
             subprocess.check_call(["gunzip", "-f", lhe])
             return lhe[:-3]
@@ -265,8 +272,11 @@ def _build_allmatrix2py(sa_dir, log):
     # ensure f2py matches the current Python interpreter (not whatever 'f2py3' resolves to)
     env["F2PY"] = f"{sys.executable} -m numpy.f2py"
     # meson f2py compiles in a tmpdir; tell gfortran where to find coupl.inc etc.
-    p_dirs = [d for d in os.listdir(sub) if d.startswith("P") and
-              os.path.isdir(os.path.join(sub, d))]
+    p_dirs = [
+        d
+        for d in os.listdir(sub)
+        if d.startswith("P") and os.path.isdir(os.path.join(sub, d))
+    ]
     inc_flags = " ".join([f"-I{os.path.join(sub, d)}" for d in p_dirs] + [f"-I{sub}"])
     env["FFLAGS"] = (env.get("FFLAGS", "") + " -fPIC " + inc_flags).strip()
     # remove stale non-PIC matrix.o / libmatrix.a from a previous build
@@ -289,14 +299,21 @@ def _build_allmatrix2py(sa_dir, log):
         f.flush()
         abs_lib = os.path.abspath(os.path.join(sa_dir, "lib"))
         subprocess.check_call(
-            ["make", "all_matrix2py.so",
-             f"LINKLIBS_ME=-L{abs_lib} -ldhelas -lmodel",
-             f"LINKLIBS_ALL=-L{abs_lib} -lmatrix -ldhelas -lmodel"],
-            cwd=sub, stdout=f, stderr=subprocess.STDOUT, env=env)
+            [
+                "make",
+                "all_matrix2py.so",
+                f"LINKLIBS_ME=-L{abs_lib} -ldhelas -lmodel",
+                f"LINKLIBS_ALL=-L{abs_lib} -lmatrix -ldhelas -lmodel",
+            ],
+            cwd=sub,
+            stdout=f,
+            stderr=subprocess.STDOUT,
+            env=env,
+        )
     return sub
 
 
-_WORKER = r'''
+_WORKER = r"""
 import sys, json, os
 sys.path.insert(0, sys.argv[1])
 import matrix2py
@@ -308,12 +325,13 @@ for pdgs, p in data:
     p2 = [[p[i][j] for i in range(len(p))] for j in range(len(p[0]))]
     out.append(matrix2py.smatrixhel(pdgs, -1, p2, 0.13, 0.0, -1))
 json.dump(out, sys.stdout)
-'''
+"""
 
 
 def _eval_amplitudes(p_dirs, param_card, events_by_pdir):
     """events_by_pdir: dict[p_dir] -> list of (pdgs, mom_list). Returns same keys -> list of me2."""
     import json, tempfile
+
     results = {}
     worker_path = os.path.join(tempfile.gettempdir(), "_mg_amp_worker.py")
     with open(worker_path, "w") as f:
@@ -322,7 +340,10 @@ def _eval_amplitudes(p_dirs, param_card, events_by_pdir):
         payload = json.dumps([(pdgs, mom.tolist()) for pdgs, mom in evts])
         proc = subprocess.run(
             [sys.executable, worker_path, p_dir, param_card],
-            input=payload, capture_output=True, text=True, check=True,
+            input=payload,
+            capture_output=True,
+            text=True,
+            check=True,
         )
         results[p_dir] = json.loads(proc.stdout)
     return results
@@ -345,11 +366,15 @@ def _parse_lhe(lhe_path):
         nup = int(header[0])
         alphas = float(header[5])
         pdgs, mom = [], []
-        for ln in lines[1:1 + nup]:
+        for ln in lines[1 : 1 + nup]:
             parts = ln.split()
             pdgs.append(int(parts[0]))
-            px, py, pz, E = (float(parts[6]), float(parts[7]),
-                              float(parts[8]), float(parts[9]))
+            px, py, pz, E = (
+                float(parts[6]),
+                float(parts[7]),
+                float(parts[8]),
+                float(parts[9]),
+            )
             mom.append([E, px, py, pz])
         yield pdgs, np.array(mom), alphas
 
@@ -371,9 +396,11 @@ def _post_cuts(pdgs, mom, m_inv_range, costheta_range):
     if costheta_range is not None:
         if len(pf) != 2:
             raise ValueError("costheta cut requires 2 -> 2 scattering")
+
         # Lorentz-invariant cos(theta*) = (u - t)/(u + t)
         def _sq(p):
             return p[0] ** 2 - p[1] ** 2 - p[2] ** 2 - p[3] ** 2
+
         p1, p3, p4 = mom[0], mom[2], mom[3]
         tval = _sq(p1 - p3)
         uval = _sq(p1 - p4)
@@ -386,12 +413,15 @@ def _post_cuts(pdgs, mom, m_inv_range, costheta_range):
 
 def _plot_hexbin(momenta, me2, n_final, out_path):
     import matplotlib.pyplot as plt
+
     if n_final != 2:
         raise ValueError("hexbin plot only available for 2->2 processes")
+
     # Mandelstams (Lorentz invariant): s=(p1+p2)^2, t=(p1-p3)^2, u=(p1-p4)^2.
     # cos(theta*) in the partonic CM frame = (u - t)/(u + t).
     def _sq(p):
         return p[:, 0] ** 2 - p[:, 1] ** 2 - p[:, 2] ** 2 - p[:, 3] ** 2
+
     p1, p2, p3, p4 = momenta[:, 0], momenta[:, 1], momenta[:, 2], momenta[:, 3]
     s = _sq(p1 + p2)
     t = _sq(p1 - p3)
@@ -399,8 +429,15 @@ def _plot_hexbin(momenta, me2, n_final, out_path):
     m_inv = np.sqrt(np.maximum(s, 0.0))
     ct = (u - t) / (u + t)
     fig, ax = plt.subplots(figsize=(6, 5))
-    hb = ax.hexbin(m_inv, ct, C=me2,
-                   reduce_C_function=np.mean, gridsize=50, bins="log", cmap="viridis")
+    hb = ax.hexbin(
+        m_inv,
+        ct,
+        C=me2,
+        reduce_C_function=np.mean,
+        gridsize=50,
+        bins="log",
+        cmap="viridis",
+    )
     ax.set_xlabel(r"$m_{\mathrm{inv}}$ [GeV]")
     ax.set_ylabel(r"$\cos\theta^{*} = (u-t)/(u+t)$")
     fig.colorbar(hb, ax=ax, label=r"mean $|\mathcal{M}|^2$")
@@ -410,8 +447,18 @@ def _plot_hexbin(momenta, me2, n_final, out_path):
     print(f"Wrote plot to {out_path}")
 
 
-def run(process, n_events=10000, m_inv_range=None, costheta_range=None,
-        workdir=None, dR=0.3, plot=False, mg_path=None):
+def run(
+    process,
+    n_events=10000,
+    m_inv_range=None,
+    costheta_range=None,
+    workdir=None,
+    dR=0.3,
+    plot=False,
+    mg_path=None,
+    overwrite_alphas=None,
+    overwrite_PDGs=None,
+):
     _resolve_mg_bin(mg_path)
     n_final = _count_final_state(process)
     slug = _slug(process)
@@ -427,7 +474,11 @@ def run(process, n_events=10000, m_inv_range=None, costheta_range=None,
 
     me_script = os.path.join(workdir, "proc_me.mg5")
     sa_script = os.path.join(workdir, "proc_sa.mg5")
-    group = costheta_range is None  # costheta vs beam-1 breaks initial-state symmetry
+    # Always disable subprocess grouping: with grouping enabled the standalone
+    # build only registers a single representative diagram per equivalence
+    # class, and smatrixhel returns 0 for every event whose specific (pdgs)
+    # tuple does not match the representative.
+    group = False
 
     me_ready = os.path.isfile(os.path.join(me_dir, "Cards", "run_card.dat"))
     sa_ready = os.path.isfile(os.path.join(sa_dir, "Cards", "param_card.dat"))
@@ -466,6 +517,7 @@ def run(process, n_events=10000, m_inv_range=None, costheta_range=None,
 
     sys.path.insert(0, sub_dir)
     import all_matrix2py  # noqa: E402
+
     # lha_read.f calls Fortran STOP if ident_card.dat isn't found under ./Cards.
     # Run initialise from sa_dir so the relative lookup succeeds.
     _cwd = os.getcwd()
@@ -481,21 +533,29 @@ def run(process, n_events=10000, m_inv_range=None, costheta_range=None,
         if not _post_cuts(pdgs, mom, m_inv_range, costheta_range):
             continue
         p2 = _invert(mom.tolist())
+        if overwrite_alphas is not None:
+            alphas = overwrite_alphas
+        if overwrite_PDGs is not None:
+            pdgs = overwrite_PDGs
         me2 = all_matrix2py.smatrixhel(pdgs, -1, p2, alphas, 0.0, -1)
         rows.append(mom.flatten().tolist() + [alphas, me2])
 
     n_part = 2 + n_final
     # row layout: [momenta(4*n_part), alphas, me2]
     arr = np.array(rows, dtype=np.float64) if rows else np.empty((0, 4 * n_part + 2))
-    momenta = arr[:, :4 * n_part].reshape(-1, n_part, 4)
+    momenta = arr[:, : 4 * n_part].reshape(-1, n_part, 4)
     alphas = arr[:, -2]
     me2 = arr[:, -1]
     out = os.path.join(workdir, f"proc_{slug}.npy")
     np.save(out, arr)
     print(f"Wrote {len(arr)} events (after cuts) to {out}  shape={arr.shape}")
     if plot:
-        _plot_hexbin(momenta, me2, n_final,
-                     os.path.join(workdir, f"proc_{slug}_minv_costheta.png"))
+        _plot_hexbin(
+            momenta,
+            me2,
+            n_final,
+            os.path.join(workdir, f"proc_{slug}_minv_costheta.png"),
+        )
     return momenta, alphas, me2
 
 
@@ -508,19 +568,54 @@ def _parse_range(s):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--process", type=str, required=True,
-                    help="MadGraph process string, e.g. 'q q > z g' or 'g g > t t~'")
-    ap.add_argument("--n-events", type=int, default=10000,
-                    help="number of unweighted events to generate (default: 10000)")
-    ap.add_argument("--mg-path", type=str, default=None,
-                    help=f"path to mg5_aMC binary; saved to {MG_PATH_FILE} for reuse")
-    ap.add_argument("--m-inv", type=str, default=None,
-                    help="invariant-mass cut 'lo,hi' on all final-state particles")
-    ap.add_argument("--costheta", type=str, default=None,
-                    help="costheta cut 'lo,hi' (only for 2->2 processes)")
+    ap.add_argument(
+        "--process",
+        type=str,
+        required=True,
+        help="MadGraph process string, e.g. 'q q > z g' or 'g g > t t~'",
+    )
+    ap.add_argument(
+        "--n-events",
+        type=int,
+        default=10000,
+        help="number of unweighted events to generate (default: 10000)",
+    )
+    ap.add_argument(
+        "--mg-path",
+        type=str,
+        default=None,
+        help=f"path to mg5_aMC binary; saved to {MG_PATH_FILE} for reuse",
+    )
+    ap.add_argument(
+        "--m-inv",
+        type=str,
+        default=None,
+        help="invariant-mass cut 'lo,hi' on all final-state particles",
+    )
+    ap.add_argument(
+        "--costheta",
+        type=str,
+        default=None,
+        help="costheta cut 'lo,hi' (only for 2->2 processes)",
+    )
+    ap.add_argument(
+        "--overwrite_alphas",
+        type=float,
+        default=None,
+        help="Overwrite alpha_s in lhe files",
+    )
+    ap.add_argument(
+        "--overwrite_PDGs",
+        type=str,
+        default=None,
+        help="Comma-separated list of PDG IDs to overwrite in the LHE files, e.g. '21,1,-1'",
+    )
     ap.add_argument("--workdir", type=str, default=None)
-    ap.add_argument("--plot", action="store_true",
-                    help="hexbin plot of m_inv vs costheta colored by mean |M|^2 (2->2 only)")
+    ap.add_argument(
+        "--plot",
+        action="store_true",
+        help="hexbin plot of m_inv vs costheta colored by mean |M|^2 (2->2 only)",
+    )
     args = ap.parse_args()
     run(
         args.process,
@@ -530,6 +625,12 @@ def main():
         workdir=args.workdir,
         plot=args.plot,
         mg_path=args.mg_path,
+        overwrite_alphas=args.overwrite_alphas,
+        overwrite_PDGs=(
+            [int(x) for x in args.overwrite_PDGs.split(",")]
+            if args.overwrite_PDGs
+            else None
+        ),
     )
 
 
