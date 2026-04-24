@@ -7,11 +7,13 @@ Workflow follows https://cp3.irmp.ucl.ac.be/projects/madgraph/wiki/FAQ-General-4
   3. Parse LHE, optionally apply post-cuts on m_inv and costheta, evaluate |M|^2.
 """
 import argparse
+import fcntl
 import os
 import re
 import shutil
 import subprocess
 import sys
+import uuid
 import warnings
 import xml.etree.ElementTree as ET
 
@@ -98,6 +100,35 @@ def _log_call(cmd, log, cwd=None):
 
 def _run_mg(script, log):
     _log_call([MG_BIN, "-f", script], log)
+
+
+def _ensure_base(base_dir, process, log):
+    """Generate madevent and standalone template directories in base_dir exactly once.
+    POSIX file lock ensures safety when called from concurrent processes."""
+    lockfile = os.path.join(base_dir, ".lock")
+    donefile = os.path.join(base_dir, ".done")
+    with open(lockfile, "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        if os.path.exists(donefile):
+            return
+        open(log, "w").close()
+        me_dir = os.path.join(base_dir, "madevent")
+        sa_dir = os.path.join(base_dir, "standalone")
+        if not os.path.isfile(os.path.join(me_dir, "Cards", "run_card.dat")):
+            me_script = os.path.join(base_dir, "proc_me.mg5")
+            _write_mg_script(me_script, "madevent", me_dir, process, group=False)
+            print("[generate] generating madevent process directory ...")
+            _run_mg(me_script, log)
+        else:
+            print("[generate] reusing existing base madevent directory")
+        if not os.path.isfile(os.path.join(sa_dir, "Cards", "param_card.dat")):
+            sa_script = os.path.join(base_dir, "proc_sa.mg5")
+            _write_mg_script(sa_script, "standalone", sa_dir, process, group=False)
+            print("[generate] generating standalone process directory ...")
+            _run_mg(sa_script, log)
+        else:
+            print("[generate] reusing existing base standalone directory")
+        open(donefile, "w").close()
 
 
 def _patch_run_card(run_card, n_events, dR=0.3):
@@ -245,7 +276,7 @@ def _generate_events(out_dir, n_events, dR, log):
     ma5h = os.path.join(out_dir, "Cards", "madanalysis5_hadron_card.dat")
     if os.path.exists(ma5h):
         os.remove(ma5h)
-    launch = os.path.join(HERE, "_launch.mg5")
+    launch = os.path.join(out_dir, "_launch.mg5")
     with open(launch, "w") as f:
         f.write(f"launch {out_dir}\n0\n")
     _run_mg(launch, log)
@@ -458,47 +489,50 @@ def run(
     mg_path=None,
     overwrite_alphas=None,
     overwrite_PDGs=None,
+    run_id=None,
+    cleanup=False,
 ):
     _resolve_mg_bin(mg_path)
     n_final = _count_final_state(process)
     slug = _slug(process)
-    workdir = workdir or os.path.join(HERE, "output", f"proc_{slug}")
-    os.makedirs(workdir, exist_ok=True)
-    me_dir = os.path.join(workdir, "madevent")
-    sa_dir = os.path.join(workdir, "standalone")
 
-    log = os.path.join(workdir, "madgraph.log")
-    open(log, "w").close()
+    # proc_dir holds the shared _base/ and all per-job runs/
+    proc_dir = workdir or os.path.join(HERE, "output", f"proc_{slug}")
+    base_dir = os.path.join(proc_dir, "_base")
+    os.makedirs(base_dir, exist_ok=True)
+
     print(f"[generate] process: {process!r} (n_final={n_final})")
-    print(f"[generate] logging MadGraph output to {log}")
+    # Phase 1: generate madevent + standalone templates once, with file lock.
+    base_log = os.path.join(base_dir, "madgraph.log")
+    _ensure_base(base_dir, process, base_log)
 
-    me_script = os.path.join(workdir, "proc_me.mg5")
-    sa_script = os.path.join(workdir, "proc_sa.mg5")
-    # Always disable subprocess grouping: with grouping enabled the standalone
-    # build only registers a single representative diagram per equivalence
-    # class, and smatrixhel returns 0 for every event whose specific (pdgs)
-    # tuple does not match the representative.
-    group = False
+    # Phase 2: per-job isolated run directory.
+    if run_id is None:
+        run_id = uuid.uuid4().hex[:8]
+    run_dir = os.path.join(proc_dir, "runs", run_id)
+    os.makedirs(run_dir, exist_ok=True)
+    log = os.path.join(run_dir, "madgraph.log")
+    open(log, "w").close()
+    print(f"[generate] run_id={run_id!r}, logging to {log}")
 
-    me_ready = os.path.isfile(os.path.join(me_dir, "Cards", "run_card.dat"))
-    sa_ready = os.path.isfile(os.path.join(sa_dir, "Cards", "param_card.dat"))
-    if not me_ready:
-        _write_mg_script(me_script, "madevent", me_dir, process, group=group)
-        print("[generate] generating madevent process directory ...")
-        _run_mg(me_script, log)
-    else:
-        print(f"[generate] reusing existing madevent directory {me_dir}")
-    if not sa_ready:
-        _write_mg_script(sa_script, "standalone", sa_dir, process, group=group)
-        print("[generate] generating standalone process directory ...")
-        _run_mg(sa_script, log)
-    else:
-        print(f"[generate] reusing existing standalone directory {sa_dir}")
+    base_me_dir = os.path.join(base_dir, "madevent")
+    base_sa_dir = os.path.join(base_dir, "standalone")
+    job_me_dir = os.path.join(run_dir, "madevent")
+    job_sa_dir = os.path.join(run_dir, "standalone")
+
+    # Copy base directories into isolated job directory so concurrent jobs
+    # don't collide on run_card patching, dummy_fct compilation, or Events/.
+    if not os.path.isdir(job_me_dir):
+        print("[generate] copying madevent base to job directory ...")
+        shutil.copytree(base_me_dir, job_me_dir, symlinks=True)
+    if not os.path.isdir(job_sa_dir):
+        print("[generate] copying standalone base to job directory ...")
+        shutil.copytree(base_sa_dir, job_sa_dir, symlinks=True)
 
     # stale Events/run_01 would make MadGraph refuse to launch with the same tag
-    run_dir = os.path.join(me_dir, "Events", "run_01")
-    if os.path.isdir(run_dir):
-        shutil.rmtree(run_dir)
+    run_01 = os.path.join(job_me_dir, "Events", "run_01")
+    if os.path.isdir(run_01):
+        shutil.rmtree(run_01)
 
     if costheta_range is not None or (plot and n_final == 2):
         warnings.warn(
@@ -509,21 +543,24 @@ def run(
             stacklevel=2,
         )
     print("[generate] patching dummy_cuts (m_inv/costheta) ...")
-    _patch_dummy_cuts(me_dir, m_inv_range, costheta_range)
+    _patch_dummy_cuts(job_me_dir, m_inv_range, costheta_range)
     print(f"[generate] launching event generation ({n_events} events) ...")
-    lhe = _generate_events(me_dir, n_events, dR, log)
+    lhe = _generate_events(job_me_dir, n_events, dR, log)
     print("[generate] building allmatrix2py.so ...")
-    sub_dir = _build_allmatrix2py(sa_dir, log)
+    sub_dir = _build_allmatrix2py(job_sa_dir, log)
 
     sys.path.insert(0, sub_dir)
+    # Invalidate any cached module from a previous run() call in this process.
+    if "all_matrix2py" in sys.modules:
+        del sys.modules["all_matrix2py"]
     import all_matrix2py  # noqa: E402
 
     # lha_read.f calls Fortran STOP if ident_card.dat isn't found under ./Cards.
-    # Run initialise from sa_dir so the relative lookup succeeds.
+    # Run initialise from job_sa_dir so the relative lookup succeeds.
     _cwd = os.getcwd()
-    os.chdir(sa_dir)
+    os.chdir(job_sa_dir)
     try:
-        all_matrix2py.initialise(os.path.join(sa_dir, "Cards", "param_card.dat"))
+        all_matrix2py.initialise(os.path.join(job_sa_dir, "Cards", "param_card.dat"))
     finally:
         os.chdir(_cwd)
 
@@ -544,19 +581,33 @@ def run(
     # row layout: [momenta(4*n_part), alphas, me2]
     arr = np.array(rows, dtype=np.float64) if rows else np.empty((0, 4 * n_part + 2))
     momenta = arr[:, : 4 * n_part].reshape(-1, n_part, 4)
-    alphas = arr[:, -2]
+    alphas_out = arr[:, -2]
     me2 = arr[:, -1]
-    out = os.path.join(workdir, f"proc_{slug}.npy")
+    out = os.path.join(run_dir, "result.npy")
     np.save(out, arr)
     print(f"Wrote {len(arr)} events (after cuts) to {out}  shape={arr.shape}")
+    results_dir = os.path.join(proc_dir, "results")
+    os.makedirs(results_dir, exist_ok=True)
+    # Serialize the allocate-next-index step so concurrent runs don't pick the same number.
+    pat = re.compile(rf"^{re.escape(slug)}_(\d+)\.npy$")
+    with open(os.path.join(results_dir, ".lock"), "a") as lf:
+        fcntl.flock(lf, fcntl.LOCK_EX)
+        used = [int(m.group(1)) for m in (pat.match(n) for n in os.listdir(results_dir)) if m]
+        idx = (max(used) + 1) if used else 1
+        collected = os.path.join(results_dir, f"{slug}_{idx}.npy")
+        np.save(collected, arr)
+    print(f"Also collected to {collected}")
     if plot:
         _plot_hexbin(
             momenta,
             me2,
             n_final,
-            os.path.join(workdir, f"proc_{slug}_minv_costheta.png"),
+            os.path.join(run_dir, "result_minv_costheta.png"),
         )
-    return momenta, alphas, me2
+    if cleanup:
+        shutil.rmtree(job_me_dir, ignore_errors=True)
+        shutil.rmtree(job_sa_dir, ignore_errors=True)
+    return momenta, alphas_out, me2
 
 
 def _parse_range(s):
@@ -616,6 +667,17 @@ def main():
         action="store_true",
         help="hexbin plot of m_inv vs costheta colored by mean |M|^2 (2->2 only)",
     )
+    ap.add_argument(
+        "--run-id",
+        type=str,
+        default=None,
+        help="identifier for this run's output directory under runs/; auto-generated if omitted",
+    )
+    ap.add_argument(
+        "--cleanup",
+        action="store_true",
+        help="delete the job's madevent/ and standalone/ copies after completion",
+    )
     args = ap.parse_args()
     run(
         args.process,
@@ -631,6 +693,8 @@ def main():
             if args.overwrite_PDGs
             else None
         ),
+        run_id=args.run_id,
+        cleanup=args.cleanup,
     )
 
 
