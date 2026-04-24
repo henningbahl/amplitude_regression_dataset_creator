@@ -98,8 +98,8 @@ def _log_call(cmd, log, cwd=None):
         subprocess.check_call(cmd, cwd=cwd, stdout=f, stderr=subprocess.STDOUT)
 
 
-def _run_mg(script, log):
-    _log_call([MG_BIN, "-f", script], log)
+def _run_mg(script, log, cwd=None):
+    _log_call([MG_BIN, "-f", script], log, cwd=cwd)
 
 
 def _ensure_base(base_dir, process, log):
@@ -118,14 +118,14 @@ def _ensure_base(base_dir, process, log):
             me_script = os.path.join(base_dir, "proc_me.mg5")
             _write_mg_script(me_script, "madevent", me_dir, process, group=False)
             print("[generate] generating madevent process directory ...")
-            _run_mg(me_script, log)
+            _run_mg(me_script, log, cwd=base_dir)
         else:
             print("[generate] reusing existing base madevent directory")
         if not os.path.isfile(os.path.join(sa_dir, "Cards", "param_card.dat")):
             sa_script = os.path.join(base_dir, "proc_sa.mg5")
             _write_mg_script(sa_script, "standalone", sa_dir, process, group=False)
             print("[generate] generating standalone process directory ...")
-            _run_mg(sa_script, log)
+            _run_mg(sa_script, log, cwd=base_dir)
         else:
             print("[generate] reusing existing base standalone directory")
         open(donefile, "w").close()
@@ -151,8 +151,12 @@ def _patch_run_card(run_card, n_events, dR=0.3):
     sub("etab", -1.0)
     # delta R cut between jets
     sub("drjj", dR)
-    # loosen ptj so the run actually proceeds
-    sub("sde_strategy", 1)
+
+    # hard_survey=1 makes MadGraph use 3x more integration points and more
+    # iterations in the initial survey, preventing refinement failures with
+    # tight phase-space cuts (small cross-sections).
+    if "hard_survey" not in txt:
+        txt += "\n 1 = hard_survey  ! force robust survey for tight phase-space\n"
 
     with open(run_card, "w") as f:
         f.write(txt)
@@ -266,7 +270,7 @@ def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range):
             fh.write(new)
 
 
-def _generate_events(out_dir, n_events, dR, log):
+def _generate_events(out_dir, n_events, dR, log, cwd=None):
     run_card = os.path.join(out_dir, "Cards", "run_card.dat")
     _patch_run_card(run_card, n_events, dR=dR)
     # disable MadAnalysis5
@@ -279,7 +283,10 @@ def _generate_events(out_dir, n_events, dR, log):
     launch = os.path.join(out_dir, "_launch.mg5")
     with open(launch, "w") as f:
         f.write(f"launch {out_dir}\n0\n")
-    _run_mg(launch, log)
+    # Use job-specific cwd so MadGraph writes PLY tables (py.py) and any other
+    # cwd-relative files to an isolated directory, preventing conflicts when
+    # multiple jobs run concurrently.
+    _run_mg(launch, log, cwd=cwd)
     os.remove(launch)
     # find produced LHE
     evt_dir = os.path.join(out_dir, "Events", "run_01")
@@ -545,7 +552,7 @@ def run(
     print("[generate] patching dummy_cuts (m_inv/costheta) ...")
     _patch_dummy_cuts(job_me_dir, m_inv_range, costheta_range)
     print(f"[generate] launching event generation ({n_events} events) ...")
-    lhe = _generate_events(job_me_dir, n_events, dR, log)
+    lhe = _generate_events(job_me_dir, n_events, dR, log, cwd=run_dir)
     print("[generate] building allmatrix2py.so ...")
     sub_dir = _build_allmatrix2py(job_sa_dir, log)
 
