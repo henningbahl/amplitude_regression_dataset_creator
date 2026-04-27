@@ -681,9 +681,9 @@ def main():
         help="identifier for this run's output directory under runs/; auto-generated if omitted",
     )
     ap.add_argument(
-        "--cleanup",
+        "--no_cleanup",
         action="store_true",
-        help="delete the job's madevent/ and standalone/ copies after completion",
+        help="withdraw the job's madevent/ and standalone/ copies after completion",
     )
     args = ap.parse_args()
     run(
@@ -701,7 +701,7 @@ def main():
             else None
         ),
         run_id=args.run_id,
-        cleanup=args.cleanup,
+        cleanup=False if args.no_cleanup else True,
     )
 
 
