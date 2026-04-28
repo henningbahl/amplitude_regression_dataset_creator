@@ -10,6 +10,7 @@ import argparse
 import fcntl
 import os
 import re
+import secrets
 import shutil
 import subprocess
 import sys
@@ -131,7 +132,7 @@ def _ensure_base(base_dir, process, log):
         open(donefile, "w").close()
 
 
-def _patch_run_card(run_card, n_events, dR=0.3):
+def _patch_run_card(run_card, n_events, dR=0.3, iseed=None):
     with open(run_card) as f:
         txt = f.read()
 
@@ -151,6 +152,11 @@ def _patch_run_card(run_card, n_events, dR=0.3):
     sub("etab", -1.0)
     # delta R cut between jets
     sub("drjj", dR)
+    # rng seed: iseed=0 in MadGraph means "auto", which in practice is reused
+    # across runs in the same workdir and produces identical events. Always
+    # write an explicit non-zero seed when one is supplied.
+    if iseed is not None:
+        sub("iseed", int(iseed))
 
     # hard_survey=1 makes MadGraph use 3x more integration points and more
     # iterations in the initial survey, preventing refinement failures with
@@ -270,9 +276,9 @@ def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range):
             fh.write(new)
 
 
-def _generate_events(out_dir, n_events, dR, log, cwd=None):
+def _generate_events(out_dir, n_events, dR, log, cwd=None, iseed=None):
     run_card = os.path.join(out_dir, "Cards", "run_card.dat")
-    _patch_run_card(run_card, n_events, dR=dR)
+    _patch_run_card(run_card, n_events, dR=dR, iseed=iseed)
     # disable MadAnalysis5
     ma5 = os.path.join(out_dir, "Cards", "madanalysis5_parton_card.dat")
     if os.path.exists(ma5):
@@ -498,6 +504,7 @@ def run(
     overwrite_PDGs=None,
     run_id=None,
     cleanup=False,
+    seed=None,
 ):
     _resolve_mg_bin(mg_path)
     n_final = _count_final_state(process)
@@ -520,7 +527,12 @@ def run(
     os.makedirs(run_dir, exist_ok=True)
     log = os.path.join(run_dir, "madgraph.log")
     open(log, "w").close()
-    print(f"[generate] run_id={run_id!r}, logging to {log}")
+    if seed is None:
+        # MadGraph treats iseed in [1, 2^30] safely; pick a fresh non-zero seed
+        # so two consecutive runs without an explicit --seed don't replay the
+        # same event sequence.
+        seed = secrets.randbits(30) + 1
+    print(f"[generate] run_id={run_id!r}, seed={seed}, logging to {log}")
 
     base_me_dir = os.path.join(base_dir, "madevent")
     base_sa_dir = os.path.join(base_dir, "standalone")
@@ -552,7 +564,7 @@ def run(
     print("[generate] patching dummy_cuts (m_inv/costheta) ...")
     _patch_dummy_cuts(job_me_dir, m_inv_range, costheta_range)
     print(f"[generate] launching event generation ({n_events} events) ...")
-    lhe = _generate_events(job_me_dir, n_events, dR, log, cwd=run_dir)
+    lhe = _generate_events(job_me_dir, n_events, dR, log, cwd=run_dir, iseed=seed)
     print("[generate] building allmatrix2py.so ...")
     sub_dir = _build_allmatrix2py(job_sa_dir, log)
 
@@ -685,6 +697,13 @@ def main():
         action="store_true",
         help="withdraw the job's madevent/ and standalone/ copies after completion",
     )
+    ap.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="MadGraph iseed for reproducible event generation; "
+        "auto-generated per run when omitted (printed in the log).",
+    )
     args = ap.parse_args()
     run(
         args.process,
@@ -702,6 +721,7 @@ def main():
         ),
         run_id=args.run_id,
         cleanup=False if args.no_cleanup else True,
+        seed=args.seed,
     )
 
 
