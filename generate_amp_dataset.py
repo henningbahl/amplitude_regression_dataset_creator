@@ -23,6 +23,8 @@ import numpy as np
 HERE = os.path.dirname(os.path.abspath(__file__))
 MG_PATH_FILE = os.path.join(HERE, ".mg_path")
 MG_BIN = None  # resolved in main() / run()
+MG_ISEED_MIN = 1
+MG_ISEED_MAX = 30081 * 30081
 
 
 def _load_mg_bin():
@@ -528,10 +530,15 @@ def run(
     log = os.path.join(run_dir, "madgraph.log")
     open(log, "w").close()
     if seed is None:
-        # MadGraph treats iseed in [1, 2^30] safely; pick a fresh non-zero seed
-        # so two consecutive runs without an explicit --seed don't replay the
-        # same event sequence.
-        seed = secrets.randbits(30) + 1
+        # MadGraph requires 1 <= iseed <= 30081^2.
+        seed = secrets.randbelow(MG_ISEED_MAX) + MG_ISEED_MIN
+    else:
+        seed = int(seed)
+        if not (MG_ISEED_MIN <= seed <= MG_ISEED_MAX):
+            raise ValueError(
+                f"Invalid --seed={seed}. MadGraph requires "
+                f"{MG_ISEED_MIN} <= iseed <= {MG_ISEED_MAX}."
+            )
     print(f"[generate] run_id={run_id!r}, seed={seed}, logging to {log}")
 
     base_me_dir = os.path.join(base_dir, "madevent")
@@ -701,7 +708,8 @@ def main():
         "--seed",
         type=int,
         default=None,
-        help="MadGraph iseed for reproducible event generation; "
+        help="MadGraph iseed for reproducible event generation "
+        f"({MG_ISEED_MIN}..{MG_ISEED_MAX}); "
         "auto-generated per run when omitted (printed in the log).",
     )
     args = ap.parse_args()
