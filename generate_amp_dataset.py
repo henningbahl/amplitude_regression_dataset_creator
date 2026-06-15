@@ -176,7 +176,7 @@ _DUMMY_CUTS_TMPL = r"""      logical FUNCTION dummy_cuts(P)
       include 'nexternal.inc'
       REAL*8 P(0:3,nexternal)
       integer i
-      double precision psum0,psum1,psum2,psum3,m2,mi,ct
+      double precision psum0,psum1,psum2,psum3,m2,mi,ct,ptz
       double precision dt0,dt1,dt2,dt3,du0,du1,du2,du3,tval,uval
       LOGICAL  IS_A_J(NEXTERNAL),IS_A_L(NEXTERNAL)
       LOGICAL  IS_A_B(NEXTERNAL),IS_A_A(NEXTERNAL),IS_A_ONIUM(NEXTERNAL)
@@ -207,9 +207,23 @@ _DUMMY_CUTS_TMPL = r"""      logical FUNCTION dummy_cuts(P)
          dummy_cuts=.false.
          return
       endif
+__PTZ_BLOCK__
 __CT_BLOCK__
       return
       end
+"""
+
+# Transverse momentum of the Z boson, the first final-state particle
+# (MadGraph particle index 3: 1,2 are incoming, 3 is the Z for q q > Z + g...).
+_PTZ_BLOCK = r"""      ptz = sqrt(P(1,3)*P(1,3) + P(2,3)*P(2,3))
+      if (ptz.lt.__PTZ_LO__d0) then
+         dummy_cuts=.false.
+         return
+      endif
+      if (ptz.gt.__PTZ_HI__d0) then
+         dummy_cuts=.false.
+         return
+      endif
 """
 
 _CT_BLOCK = r"""      if (nexternal.eq.4) then
@@ -238,7 +252,7 @@ c        with t = (p1 - p3)^2, u = (p1 - p4)^2.
 """
 
 
-def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range):
+def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range, ptz_range=None):
     # Always rewrite dummy_cuts so reused directories don't retain stale cuts.
     lo, hi = m_inv_range or (None, None)
     lo = 0.0 if lo is None else float(lo)
@@ -246,6 +260,16 @@ def _patch_dummy_cuts(me_dir, m_inv_range, costheta_range):
     body = _DUMMY_CUTS_TMPL.replace("__MINV_LO__", repr(lo)).replace(
         "__MINV_HI__", repr(hi)
     )
+    if ptz_range is not None:
+        plo, phi = ptz_range
+        plo = 0.0 if plo is None else float(plo)
+        phi = 1.0e12 if phi is None else float(phi)
+        ptz_block = _PTZ_BLOCK.replace("__PTZ_LO__", repr(plo)).replace(
+            "__PTZ_HI__", repr(phi)
+        )
+    else:
+        ptz_block = ""
+    body = body.replace("__PTZ_BLOCK__", ptz_block)
     if costheta_range is not None:
         clo, chi = costheta_range
         clo = -1.0 if clo is None else float(clo)
@@ -429,7 +453,7 @@ def _invert(p):
     return [[p[i][j] for i in range(len(p))] for j in range(len(p[0]))]
 
 
-def _post_cuts(pdgs, mom, m_inv_range, costheta_range):
+def _post_cuts(pdgs, mom, m_inv_range, costheta_range, ptz_range=None):
     # invariant mass of all final-state particles (idx >= 2 in MG convention)
     pf = mom[2:]
     P = pf.sum(axis=0)
@@ -438,6 +462,13 @@ def _post_cuts(pdgs, mom, m_inv_range, costheta_range):
     if m_inv_range is not None:
         lo, hi = m_inv_range
         if (lo is not None and m_inv < lo) or (hi is not None and m_inv > hi):
+            return False
+    if ptz_range is not None:
+        # Transverse momentum of the Z, the first final-state particle (idx 2).
+        z = mom[2]
+        ptz = np.sqrt(z[1] ** 2 + z[2] ** 2)
+        lo, hi = ptz_range
+        if (lo is not None and ptz < lo) or (hi is not None and ptz > hi):
             return False
     if costheta_range is not None:
         if len(pf) != 2:
@@ -498,6 +529,7 @@ def run(
     n_events=10000,
     m_inv_range=None,
     costheta_range=None,
+    ptz_range=None,
     workdir=None,
     dR=0.3,
     plot=False,
@@ -568,8 +600,8 @@ def run(
             "not the true cos(theta*).",
             stacklevel=2,
         )
-    print("[generate] patching dummy_cuts (m_inv/costheta) ...")
-    _patch_dummy_cuts(job_me_dir, m_inv_range, costheta_range)
+    print("[generate] patching dummy_cuts (m_inv/pt_z/costheta) ...")
+    _patch_dummy_cuts(job_me_dir, m_inv_range, costheta_range, ptz_range)
     print(f"[generate] launching event generation ({n_events} events) ...")
     lhe = _generate_events(job_me_dir, n_events, dR, log, cwd=run_dir, iseed=seed)
     print("[generate] building allmatrix2py.so ...")
@@ -593,7 +625,7 @@ def run(
     print("[generate] computing amplitudes ...")
     rows = []
     for pdgs, mom, alphas in _parse_lhe(lhe):
-        if not _post_cuts(pdgs, mom, m_inv_range, costheta_range):
+        if not _post_cuts(pdgs, mom, m_inv_range, costheta_range, ptz_range):
             continue
         p2 = _invert(mom.tolist())
         if overwrite_alphas is not None:
@@ -676,6 +708,13 @@ def main():
         help="costheta cut 'lo,hi' (only for 2->2 processes)",
     )
     ap.add_argument(
+        "--pt-z",
+        type=str,
+        default=None,
+        help="transverse-momentum cut 'lo,hi' (GeV) on the Z boson "
+        "(first final-state particle); either bound may be omitted",
+    )
+    ap.add_argument(
         "--overwrite_alphas",
         type=float,
         default=None,
@@ -718,6 +757,7 @@ def main():
         n_events=args.n_events,
         m_inv_range=_parse_range(args.m_inv),
         costheta_range=_parse_range(args.costheta),
+        ptz_range=_parse_range(args.pt_z),
         workdir=args.workdir,
         plot=args.plot,
         mg_path=args.mg_path,
